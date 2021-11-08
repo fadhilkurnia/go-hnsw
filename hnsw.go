@@ -49,7 +49,7 @@ type Hnsw struct {
 	enterpoint uint32
 }
 
-// Load opens a index file previously written by Save(). Returnes a new index and the timestamp the file was written
+// Load opens an index file previously written by Save(). Returns a new index and the timestamp the file was written
 func Load(filename string) (*Hnsw, int64, error) {
 	f, err := os.Open(filename)
 	if err != nil {
@@ -386,9 +386,9 @@ func (h *Hnsw) Stats() string {
 	s = s + fmt.Sprintf("Max layer: %v\n", h.maxLayer)
 	memoryUseData := 0
 	memoryUseIndex := 0
-	levCount := make([]int, h.maxLayer+1)
-	conns := make([]int, h.maxLayer+1)
-	connsC := make([]int, h.maxLayer+1)
+	levCount := make([]int, h.maxLayer+1)   // for counting total number of top node in each level
+	conns := make([]int, h.maxLayer+1)      // for counting total number of edge, connecting node in the same level, in each level
+	connsC := make([]int, h.maxLayer+1)     // for counting total number of node in each level
 	for i := range h.nodes {
 		levCount[h.nodes[i].level]++
 		for j := 0; j <= h.nodes[i].level; j++ {
@@ -403,7 +403,7 @@ func (h *Hnsw) Stats() string {
 	}
 	for i := range levCount {
 		avg := conns[i] / max(1, connsC[i])
-		s = s + fmt.Sprintf("Level %v: %v nodes, average number of connections %v\n", i, levCount[i], avg)
+		s = s + fmt.Sprintf("Level %v: %v nodes, average number of connections %v\n", i, connsC[i], avg)
 	}
 	s = s + fmt.Sprintf("Memory use for data: %v (%v bytes / point)\n", memoryUseData, memoryUseData/len(h.nodes))
 	s = s + fmt.Sprintf("Memory use for index: %v (avg %v bytes / point)\n", memoryUseIndex, memoryUseIndex/len(h.nodes))
@@ -427,7 +427,7 @@ func (h *Hnsw) Add(q Point, id uint32) {
 	}
 
 	// generate random level
-	curlevel := int(math.Floor(-math.Log(rand.Float64() * h.LevelMult)))
+	curLevel := int(math.Floor(-math.Log(rand.Float64() * h.LevelMult)))
 
 	epID := h.enterpoint
 	currentMaxLayer := h.nodes[epID].level
@@ -435,10 +435,10 @@ func (h *Hnsw) Add(q Point, id uint32) {
 
 	// assume Grow has been called in advance
 	newID := id
-	newNode := node{p: q, level: curlevel, friends: make([][]uint32, min(curlevel, currentMaxLayer)+1)}
+	newNode := node{p: q, level: curLevel, friends: make([][]uint32, min(curLevel, currentMaxLayer)+1)}
 
-	// first pass, find another ep if curlevel < maxLayer
-	for level := currentMaxLayer; level > curlevel; level-- {
+	// first pass, find another ep if curLevel < maxLayer
+	for level := currentMaxLayer; level > curLevel; level-- {
 		changed := true
 		for changed {
 			changed = false
@@ -455,7 +455,7 @@ func (h *Hnsw) Add(q Point, id uint32) {
 	// second pass, ef = efConstruction
 	// loop through every level from the new nodes level down to level 0
 	// create new connections in every layer
-	for level := min(curlevel, currentMaxLayer); level >= 0; level-- {
+	for level := min(curLevel, currentMaxLayer); level >= 0; level-- {
 
 		resultSet := &distqueue.DistQueueClosestLast{}
 		h.searchAtLayer(q, resultSet, h.efConstruction, ep, level)
@@ -485,15 +485,15 @@ func (h *Hnsw) Add(q Point, id uint32) {
 	h.Unlock()
 
 	// now add connections to newNode from newNodes neighbours (makes it visible in the graph)
-	for level := min(curlevel, currentMaxLayer); level >= 0; level-- {
+	for level := min(curLevel, currentMaxLayer); level >= 0; level-- {
 		for _, n := range newNode.friends[level] {
 			h.Link(n, newID, level)
 		}
 	}
 
 	h.Lock()
-	if curlevel > h.maxLayer {
-		h.maxLayer = curlevel
+	if curLevel > h.maxLayer {
+		h.maxLayer = curLevel
 		h.enterpoint = newID
 	}
 	h.Unlock()
@@ -517,7 +517,7 @@ func (h *Hnsw) searchAtLayer(q Point, resultSet *distqueue.DistQueueClosestLast,
 		c := candidates.Pop()
 
 		if c.D > lowerBound {
-			// since candidates is sorted, it wont get any better...
+			// since candidates is sorted, it won't get any better...
 			break
 		}
 
@@ -588,10 +588,15 @@ func (h *Hnsw) Search(q Point, ef int, K int) *distqueue.DistQueueClosestLast {
 	ep := &distqueue.Item{ID: h.enterpoint, D: h.DistFunc(h.nodes[h.enterpoint].p, q)}
 	h.RUnlock()
 
+	procTimeAtNode := time.Now()
 	resultSet := &distqueue.DistQueueClosestLast{Size: ef + 1}
-	// first pass, find best ep
+	// first pass, find best ep in layer 0
 	for level := currentMaxLayer; level > 0; level-- {
 		changed := true
+
+		// keep changing node in the same level until
+		// we find the closest point with q using greedy approach
+		procTimeAtNode = time.Now()
 		for changed {
 			changed = false
 			for _, i := range h.getFriends(ep.ID, level) {
@@ -599,9 +604,12 @@ func (h *Hnsw) Search(q Point, ef int, K int) *distqueue.DistQueueClosestLast {
 				if d < ep.D {
 					ep.ID, ep.D = i, d
 					changed = true
+					fmt.Println(time.Since(procTimeAtNode).Nanoseconds())
+					procTimeAtNode = time.Now()
 				}
 			}
 		}
+		procTimeAtNode = time.Now()
 	}
 	h.searchAtLayer(q, resultSet, ef, ep, 0)
 
@@ -609,6 +617,10 @@ func (h *Hnsw) Search(q Point, ef int, K int) *distqueue.DistQueueClosestLast {
 		resultSet.Pop()
 	}
 	return resultSet
+}
+
+func (h *Hnsw) GetAllNodes() *[]node {
+	return &h.nodes
 }
 
 func min(a, b int) int {

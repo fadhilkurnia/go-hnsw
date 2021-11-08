@@ -22,14 +22,15 @@ func main() {
 	h := hnsw.New(M, efConstruction, zero)
 	h.Grow(10000)
 
+	fmt.Printf(">>> Generating random data points ...\n")
 	for i := 1; i <= 10000; i++ {
 		h.Add(randomPoint(), uint32(i))
-		if (i)%1000 == 0 {
-			fmt.Printf("%v points added\n", i)
-		}
+		//if (i)%1000 == 0 {
+		//	fmt.Printf("%v points added\n", i)
+		//}
 	}
 
-	fmt.Printf("Generating queries and calculating true answers using bruteforce search...\n")
+	fmt.Printf(">>> Generating queries and calculating true answers using bruteforce search ...\n")
 	queries := make([]hnsw.Point, 1000)
 	truth := make([][]uint32, 1000)
 	for i := range queries {
@@ -42,7 +43,7 @@ func main() {
 		}
 	}
 
-	fmt.Printf("Now searching with HNSW...\n")
+	fmt.Printf(">>> Now searching with HNSW ...\n")
 	hits := 0
 	start := time.Now()
 	for i := 0; i < 1000; i++ {
@@ -58,8 +59,10 @@ func main() {
 	}
 	stop := time.Since(start)
 
-	fmt.Printf("%v queries / second (single thread)\n", 1000.0/stop.Seconds())
-	fmt.Printf("Average 10-NN precision: %v\n", float64(hits)/(1000.0*float64(K)))
+	fmt.Printf("  %v queries/second (single thread)\n", 1000.0/stop.Seconds())
+	fmt.Printf("  Average search time per query: %vms (efSearch=%d, K=%d)\n", float64(stop.Milliseconds())/1000.0, efSearch, K)
+	fmt.Printf("  Average 10-NN precision: %v\n", float64(hits)/(1000.0*float64(K)))
+	fmt.Println(h.Stats())
 
 }
 
